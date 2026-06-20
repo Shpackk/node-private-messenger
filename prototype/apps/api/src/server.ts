@@ -1,4 +1,5 @@
 import { serve } from "@hono/node-server";
+import { createHash } from "node:crypto";
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -50,6 +51,14 @@ const port = Number(process.env.PORT ?? 3000);
 const databaseUrl = process.env.DATABASE_URL ?? "postgres://messenger:messenger@localhost:5432/messenger";
 const redisUrl = process.env.REDIS_URL ?? "redis://localhost:6379";
 const tokenSecret = process.env.TOKEN_SECRET ?? "local-dev-secret";
+const allowedOrigins = (
+	process.env.CORS_ALLOWED_ORIGINS ??
+	process.env.ALLOWED_ORIGINS ??
+	(process.env.NODE_ENV === "production" ? "" : "http://localhost:5173,http://127.0.0.1:5173")
+)
+	.split(",")
+	.map((origin) => origin.trim())
+	.filter(Boolean);
 
 const pool = new Pool({ connectionString: databaseUrl });
 await migrate(pool);
@@ -126,8 +135,37 @@ async function requireRateLimit(scope: string, key: string, limit: number, windo
 	if (!(await rateLimiter.check(scope, key, limit, windowSeconds))) throw new DomainError("RATE_LIMITED");
 }
 
+function clientKey(c: Context) {
+	return (
+		c.req
+			.header("x-forwarded-for")
+			?.split(",")[0]
+			?.trim() ||
+		c.req.header("x-real-ip") ||
+		"unknown"
+	);
+}
+
+async function requireAccountRateLimit(accountId: string, action: string, limit: number, windowSeconds: number) {
+	await requireRateLimit(`account.${action}`, accountId, limit, windowSeconds);
+}
+
+function rateLimitTokenKey(token: string) {
+	return createHash("sha256").update(token).digest("hex");
+}
+
 const app = new Hono();
-app.use("*", cors());
+app.use("*", async (c, next) => {
+	const origin = c.req.header("origin");
+	if (origin && !allowedOrigins.includes(origin)) return c.json(problem("FORBIDDEN", "origin not allowed"), 403);
+	await next();
+});
+app.use(
+	"*",
+	cors({
+		origin: (origin) => (allowedOrigins.includes(origin) ? origin : null),
+	}),
+);
 
 async function withSender(record: Awaited<ReturnType<typeof service.submitEnvelope>>) {
 	const sender = await accounts.findById(record.senderAccountId);
@@ -164,9 +202,12 @@ app.onError((error, c) => {
 	return c.json(mapped.body, mapped.status);
 });
 
-app.post("/v1/accounts", async (c) =>
-	c.json(await service.createAccount(AccountCreateRequest.parse(await c.req.json()))),
-);
+app.post("/v1/accounts", async (c) => {
+	const body = AccountCreateRequest.parse(await c.req.json());
+	await requireRateLimit("account.create.ip", clientKey(c), 5, 3600);
+	await requireRateLimit("account.create.username", body.username, 3, 3600);
+	return c.json(await service.createAccount(body));
+});
 app.post("/v1/auth/challenges", async (c) => {
 	const body = AuthChallengeRequest.parse(await c.req.json());
 	await requireRateLimit("auth.challenge", body.username, 10, 60);
@@ -178,25 +219,31 @@ app.post("/v1/auth/verify", async (c) => {
 	await requireRateLimit("auth.verify", body.username, 10, 60);
 	return c.json(await service.verifyChallenge(body));
 });
-app.post("/v1/auth/refresh", async (c) =>
-	c.json(await service.refresh(RefreshRequest.parse(await c.req.json()).refreshToken)),
-);
+app.post("/v1/auth/refresh", async (c) => {
+	const body = RefreshRequest.parse(await c.req.json());
+	await requireRateLimit("auth.refresh.ip", clientKey(c), 30, 60);
+	await requireRateLimit("auth.refresh.token", rateLimitTokenKey(body.refreshToken), 10, 60);
+	return c.json(await service.refresh(body.refreshToken));
+});
 app.post("/v1/mfa/registration/setup", async (c) => {
 	const body = MfaRegistrationSetupRequest.parse(await c.req.json());
 	await requireRateLimit("mfa.registration", body.username, 5, 60);
 	return c.json(service.createMfaRegistrationSetup(body.username));
 });
 app.get("/v1/usernames/:username/available", async (c) => {
+	await requireRateLimit("username.available.ip", clientKey(c), 60, 60);
 	const existing = await accounts.findByUsername(c.req.param("username").trim().toLowerCase());
 	return c.json({ available: !existing || Boolean(existing.deletedAt) });
 });
 app.put("/v1/discovery", async (c) => {
 	const account = await auth(c);
+	await requireAccountRateLimit(account.accountId, "discovery.update", 20, 60);
 	await accounts.setDiscovery(account.accountId, DiscoveryUpdateRequest.parse(await c.req.json()).discoverable);
 	return c.json({ ok: true });
 });
 app.delete("/v1/discovery", async (c) => {
 	const account = await auth(c);
+	await requireAccountRateLimit(account.accountId, "discovery.delete", 20, 60);
 	await accounts.setDiscovery(account.accountId, false);
 	return c.json({ ok: true });
 });
@@ -212,9 +259,13 @@ app.post("/v1/mfa/setup/confirm", async (c) => {
 	const body = MfaSetupConfirmRequest.parse(await c.req.json());
 	return c.json(await service.confirmMfaSetup(account.accountId, body));
 });
-app.get("/v1/discovery/:username", async (c) => c.json(await service.discover(c.req.param("username"))));
+app.get("/v1/discovery/:username", async (c) => {
+	await requireRateLimit("discovery.lookup.ip", clientKey(c), 60, 60);
+	return c.json(await service.discover(c.req.param("username")));
+});
 app.post("/v1/keys", async (c) => {
 	const account = await auth(c);
+	await requireAccountRateLimit(account.accountId, "keys.upload", 10, 60);
 	await keys.put(account.accountId, KeyBundle.parse(await c.req.json()));
 	return c.json({ ok: true });
 });
@@ -239,11 +290,13 @@ app.delete("/v1/blocks/:accountId", async (c) => {
 });
 app.put("/v1/push-token", async (c) => {
 	const account = await auth(c);
+	await requireAccountRateLimit(account.accountId, "push-token", 10, 60);
 	await push.saveToken(account.accountId, PushTokenRequest.parse(await c.req.json()));
 	return c.json({ ok: true });
 });
 app.post("/v1/envelopes", async (c) => {
 	const account = await auth(c);
+	await requireAccountRateLimit(account.accountId, "envelopes.submit", 120, 60);
 	const body = EnvelopeSubmitRequest.parse(await c.req.json());
 	if (body.senderAccountId !== account.accountId) throw new DomainError("FORBIDDEN");
 	const record = await service.submitEnvelope(body);
@@ -258,22 +311,28 @@ app.post("/v1/envelopes", async (c) => {
 });
 app.get("/v1/envelopes", async (c) => {
 	const account = await auth(c);
+	await requireAccountRateLimit(account.accountId, "envelopes.lease", 120, 60);
 	const leased = await service.leaseEnvelopes(account.accountId);
 	return c.json({ leaseId: leased[0]?.leaseId ?? ids.uuid(), envelopes: await withSenders(leased) });
 });
 app.post("/v1/envelopes/ack", async (c) => {
 	const account = await auth(c);
+	await requireAccountRateLimit(account.accountId, "envelopes.ack", 120, 60);
 	const body = EnvelopeAckRequest.parse(await c.req.json());
 	return c.json({ acknowledged: await service.ack(account.accountId, body.envelopeIds) });
 });
 app.delete("/v1/account", async (c) => {
 	const account = await auth(c);
+	await requireAccountRateLimit(account.accountId, "delete", 3, 3600);
 	await service.deleteAccount(account.accountId);
 	return c.json({ ok: true });
 });
 app.post("/v1/account/duress-delete", async (c) => {
 	const body = await c.req.json();
-	return c.json(await service.duressDelete(String(body.username ?? ""), String(body.password ?? "")));
+	const username = String(body.username ?? "");
+	await requireRateLimit("account.duress-delete.ip", clientKey(c), 5, 3600);
+	await requireRateLimit("account.duress-delete.username", username, 3, 3600);
+	return c.json(await service.duressDelete(username, String(body.password ?? "")));
 });
 
 setInterval(() => {
@@ -332,8 +391,12 @@ wss.on("connection", async (ws: WebSocket, _request: unknown, accountId: string,
 		try {
 			const event = WsClientEvent.parse(JSON.parse(raw.toString()));
 			if (event.type === "ping") ws.send(JSON.stringify({ type: "pong", id: event.id }));
-			if (event.type === "envelope.ack") await service.ack(accountId, event.payload.envelopeIds);
+			if (event.type === "envelope.ack") {
+				await requireRateLimit("ws.envelopes.ack", accountId, 120, 60);
+				await service.ack(accountId, event.payload.envelopeIds);
+			}
 			if (event.type === "envelope.submit") {
+				await requireRateLimit("ws.envelopes.submit", accountId, 120, 60);
 				if (event.payload.senderAccountId !== accountId) throw new DomainError("FORBIDDEN");
 				const record = await service.submitEnvelope(event.payload);
 				ws.send(
