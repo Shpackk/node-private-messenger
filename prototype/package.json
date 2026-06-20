@@ -1,0 +1,43 @@
+{
+	"name": "local-messenger-prototype",
+	"private": true,
+	"type": "module",
+	"packageManager": "pnpm@9.15.4",
+	"workspaces": ["apps/*", "packages/*"],
+	"scripts": {
+		"build": "pnpm -r build",
+		"check": "biome check .",
+		"dev:api": "pnpm --filter @prototype/api dev",
+		"dev:client": "pnpm --filter @prototype/client dev",
+		"format": "biome format --write .",
+		"format:check": "biome format .",
+		"lint": "biome lint .",
+		"migrate": "pnpm --filter @prototype/db migrate",
+		"test": "vitest run"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^1.9.4",
+		"@types/node": "^20.14.11",
+		"@types/pg": "^8.11.6",
+		"@types/react": "^18.3.3",
+		"@types/react-dom": "^18.3.0",
+		"@types/ws": "^8.5.10",
+		"@vitejs/plugin-react": "^4.3.1",
+		"tsx": "^4.16.2",
+		"typescript": "^5.5.3",
+		"vite": "^5.3.4",
+		"vitest": "^1.6.0"
+	},
+	"dependencies": {
+		"@hono/node-server": "^1.13.1",
+		"@hono/node-ws": "^1.0.2",
+		"@vitejs/plugin-react": "^4.3.1",
+		"hono": "^4.5.3",
+		"ioredis": "^5.4.1",
+		"pg": "^8.12.0",
+		"react": "^18.3.1",
+		"react-dom": "^18.3.1",
+		"ws": "^8.18.0",
+		"zod": "^3.23.8"
+	}
+}

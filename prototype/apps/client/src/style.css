@@ -1,0 +1,104 @@
+* {
+	box-sizing: border-box;
+}
+
+body {
+	margin: 0;
+	font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+	background: #f4f6f8;
+	color: #121417;
+}
+
+main {
+	display: grid;
+	grid-template-columns: 320px 1fr;
+	min-height: 100vh;
+}
+
+.sidebar {
+	padding: 24px;
+	border-right: 1px solid #d9dee5;
+	background: #ffffff;
+}
+
+h1 {
+	margin: 0 0 8px;
+	font-size: 24px;
+}
+
+.muted {
+	color: #637083;
+}
+
+.stack {
+	display: grid;
+	gap: 10px;
+}
+
+input,
+button {
+	min-height: 40px;
+	border: 1px solid #c9d1db;
+	border-radius: 6px;
+	padding: 0 12px;
+	font: inherit;
+}
+
+button {
+	background: #1d4ed8;
+	color: white;
+	border: 0;
+	cursor: pointer;
+}
+
+button:disabled {
+	background: #9aa6b2;
+	cursor: not-allowed;
+}
+
+.chat {
+	display: grid;
+	grid-template-rows: 1fr auto;
+	min-width: 0;
+}
+
+.messages {
+	padding: 24px;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	overflow: auto;
+}
+
+.bubble {
+	max-width: min(620px, 80%);
+	padding: 10px 12px;
+	border-radius: 8px;
+	background: #ffffff;
+	border: 1px solid #d9dee5;
+}
+
+.bubble.out {
+	align-self: flex-end;
+	background: #dbeafe;
+	border-color: #bfdbfe;
+}
+
+.composer {
+	display: grid;
+	grid-template-columns: 1fr auto;
+	gap: 10px;
+	padding: 16px;
+	border-top: 1px solid #d9dee5;
+	background: #ffffff;
+}
+
+@media (max-width: 760px) {
+	main {
+		grid-template-columns: 1fr;
+	}
+	.sidebar {
+		border-right: 0;
+		border-bottom: 1px solid #d9dee5;
+	}
+}

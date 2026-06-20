@@ -1,0 +1,19 @@
+{
+	"name": "@prototype/db",
+	"private": true,
+	"type": "module",
+	"main": "src/index.ts",
+	"scripts": {
+		"build": "tsc --noEmit",
+		"migrate": "node --loader ts-node/esm src/migrate.ts"
+	},
+	"dependencies": {
+		"@prototype/contracts": "workspace:*",
+		"@prototype/domain": "workspace:*",
+		"ioredis": "^5.4.1",
+		"pg": "^8.12.0"
+	},
+	"devDependencies": {
+		"ts-node": "^10.9.2"
+	}
+}

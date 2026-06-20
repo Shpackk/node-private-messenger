@@ -1,0 +1,12 @@
+{
+	"name": "@prototype/domain",
+	"private": true,
+	"type": "module",
+	"main": "src/index.ts",
+	"scripts": {
+		"build": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@prototype/contracts": "workspace:*"
+	}
+}
