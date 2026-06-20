@@ -158,6 +158,7 @@ function App() {
 			},
 			tokens,
 		);
+		await pullQueued(tokens);
 	}
 
 	async function discover() {
@@ -190,9 +191,9 @@ function App() {
 		setText("");
 	}
 
-	async function pullQueued() {
-		if (!session) return;
-		const leased = await api<EnvelopeList>("/v1/envelopes", {}, session);
+	async function pullQueued(currentSession = session) {
+		if (!currentSession) return;
+		const leased = await api<EnvelopeList>("/v1/envelopes", {}, currentSession);
 		const unseen = leased.envelopes.filter((env) => !seenEnvelopeIdsRef.current.has(env.envelopeId));
 		for (const env of unseen) seenEnvelopeIdsRef.current.add(env.envelopeId);
 		setMessages((current) => [
@@ -211,7 +212,7 @@ function App() {
 					method: "POST",
 					body: JSON.stringify({ envelopeIds: leased.envelopes.map((env) => env.envelopeId) }),
 				},
-				session,
+				currentSession,
 			);
 	}
 
@@ -250,9 +251,6 @@ function App() {
 						/>
 						<button type="button" onClick={discover}>
 							Discover
-						</button>
-						<button type="button" onClick={pullQueued}>
-							Pull Queued
 						</button>
 						<button
 							type="button"
