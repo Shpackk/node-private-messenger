@@ -5,6 +5,7 @@ import type { ContentfulStatusCode } from "hono/utils/http-status";
 import Redis from "ioredis";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
+	ACCESS_TOKEN_SECONDS,
 	AccountCreateRequest,
 	AuthChallengeRequest,
 	AuthVerifyRequest,
@@ -38,6 +39,7 @@ import {
 	Pool,
 	RedisChallengeStore,
 	RedisConnectionRegistry,
+	RedisRateLimiter,
 } from "@prototype/db";
 
 const port = Number(process.env.PORT ?? 3000);
@@ -57,6 +59,7 @@ const blocks = new PgBlockStore(pool);
 const envelopes = new PgEnvelopeStore(pool);
 const push = new PgPushGateway(pool);
 const registry = new RedisConnectionRegistry(redis);
+const rateLimiter = new RedisRateLimiter(redis);
 const issuer = new TokenIssuer(tokenSecret, clock, ids);
 const service = new MessengerService(
 	accounts,
@@ -84,11 +87,17 @@ function mapError(error: unknown): { status: ContentfulStatusCode; body: ErrorRe
 		const status =
 			error.code === "UNAUTHORIZED"
 				? 401
-				: error.code === "NOT_FOUND"
-					? 404
-					: error.code === "USERNAME_TAKEN"
-						? 409
-						: 400;
+				: error.code === "FORBIDDEN"
+					? 403
+					: error.code === "NOT_FOUND"
+						? 404
+						: error.code === "USERNAME_TAKEN" || error.code === "QUEUE_FULL"
+							? 409
+							: error.code === "RECIPIENT_UNAVAILABLE"
+								? 503
+								: error.code === "RATE_LIMITED"
+									? 429
+									: 400;
 		return { status, body: problem(error.code, error.message) };
 	}
 	if (error && typeof error === "object" && "issues" in error)
@@ -108,6 +117,10 @@ async function auth(c: Context) {
 	return account;
 }
 
+async function requireRateLimit(scope: string, key: string, limit: number, windowSeconds: number) {
+	if (!(await rateLimiter.check(scope, key, limit, windowSeconds))) throw new DomainError("RATE_LIMITED");
+}
+
 const app = new Hono();
 app.use("*", cors());
 
@@ -124,6 +137,23 @@ async function withSender(record: Awaited<ReturnType<typeof service.submitEnvelo
 	};
 }
 
+async function withSenders(records: Awaited<ReturnType<typeof service.leaseEnvelopes>>) {
+	const senderIds = [...new Set(records.map((record) => record.senderAccountId))];
+	const senders = new Map((await accounts.findByIds(senderIds)).map((sender) => [sender.accountId, sender]));
+	return records.map((record) => {
+		const sender = senders.get(record.senderAccountId);
+		if (!sender || sender.deletedAt) throw new DomainError("NOT_FOUND");
+		return {
+			...record,
+			sender: {
+				accountId: sender.accountId,
+				username: sender.username,
+				displayName: sender.displayName,
+			},
+		};
+	});
+}
+
 app.onError((error, c) => {
 	const mapped = mapError(error);
 	return c.json(mapped.body, mapped.status);
@@ -134,12 +164,15 @@ app.post("/v1/accounts", async (c) =>
 );
 app.post("/v1/auth/challenges", async (c) => {
 	const body = AuthChallengeRequest.parse(await c.req.json());
+	await requireRateLimit("auth.challenge", body.username, 10, 60);
 	const challenge = await service.createChallenge(body.username);
 	return c.json({ ...challenge, expiresAt: challenge.expiresAt.toISOString() });
 });
-app.post("/v1/auth/verify", async (c) =>
-	c.json(await service.verifyChallenge(AuthVerifyRequest.parse(await c.req.json()))),
-);
+app.post("/v1/auth/verify", async (c) => {
+	const body = AuthVerifyRequest.parse(await c.req.json());
+	await requireRateLimit("auth.verify", body.username, 10, 60);
+	return c.json(await service.verifyChallenge(body));
+});
 app.post("/v1/auth/refresh", async (c) =>
 	c.json(await service.refresh(RefreshRequest.parse(await c.req.json()).refreshToken)),
 );
@@ -164,9 +197,12 @@ app.post("/v1/keys", async (c) => {
 	return c.json({ ok: true });
 });
 app.get("/v1/keys/:accountId", async (c) => {
-	const bundle = await keys.get(c.req.param("accountId"));
+	const account = await auth(c);
+	const targetAccountId = c.req.param("accountId");
+	await requireRateLimit("keys.consume", `${account.accountId}:${targetAccountId}`, 30, 60);
+	const bundle = await keys.get(targetAccountId);
 	if (!bundle) throw new DomainError("NOT_FOUND");
-	const oneTimePreKey = await keys.consumeOneTimePreKey(c.req.param("accountId"));
+	const oneTimePreKey = await keys.consumeOneTimePreKey(targetAccountId);
 	return c.json({ ...bundle, oneTimePreKey });
 });
 app.put("/v1/blocks", async (c) => {
@@ -201,7 +237,7 @@ app.post("/v1/envelopes", async (c) => {
 app.get("/v1/envelopes", async (c) => {
 	const account = await auth(c);
 	const leased = await service.leaseEnvelopes(account.accountId);
-	return c.json({ leaseId: leased[0]?.leaseId ?? ids.uuid(), envelopes: await Promise.all(leased.map(withSender)) });
+	return c.json({ leaseId: leased[0]?.leaseId ?? ids.uuid(), envelopes: await withSenders(leased) });
 });
 app.post("/v1/envelopes/ack", async (c) => {
 	const account = await auth(c);
@@ -235,10 +271,12 @@ server.on("upgrade", async (request, socket, head) => {
 	if (!claims) return socket.destroy();
 	const account = await accounts.findById(claims.sub);
 	if (!account || account.deletedAt || account.tokenVersion !== claims.tokenVersion) return socket.destroy();
-	wss.handleUpgrade(request, socket, head, (ws) => wss.emit("connection", ws, request, account.accountId, token));
+	wss.handleUpgrade(request, socket, head, (ws) =>
+		wss.emit("connection", ws, request, account.accountId, claims.exp),
+	);
 });
 
-wss.on("connection", async (ws: WebSocket, _request: unknown, accountId: string) => {
+wss.on("connection", async (ws: WebSocket, _request: unknown, accountId: string, tokenExpiresAtSeconds: number) => {
 	const connectionId = ids.uuid();
 	const old = await registry.claim(accountId, connectionId, 90);
 	if (old) {
@@ -252,12 +290,17 @@ wss.on("connection", async (ws: WebSocket, _request: unknown, accountId: string)
 		(event) => ws.readyState === ws.OPEN && ws.send(JSON.stringify(event)),
 	);
 	const refresh = setInterval(() => registry.refresh(accountId, connectionId, 90).catch(() => undefined), 30000);
+	const tokenExpiresAtMs = tokenExpiresAtSeconds * 1000;
 	const expiring = setInterval(
 		() =>
-			ws.readyState === ws.OPEN &&
-			ws.send(JSON.stringify({ type: "token.expiring", expiresAt: new Date(Date.now() + 60000).toISOString() })),
-		9 * 60000,
+			ws.readyState === ws.OPEN && Date.now() >= tokenExpiresAtMs - ACCESS_TOKEN_SECONDS * 500
+				? ws.send(JSON.stringify({ type: "token.expiring", expiresAt: new Date(tokenExpiresAtMs).toISOString() }))
+				: undefined,
+		30000,
 	);
+	const closeOnExpiry = setTimeout(() => {
+		if (ws.readyState === ws.OPEN) ws.close(4001, "access token expired");
+	}, Math.max(tokenExpiresAtMs - Date.now(), 0));
 	ws.on("message", async (raw) => {
 		try {
 			const event = WsClientEvent.parse(JSON.parse(raw.toString()));
@@ -287,6 +330,7 @@ wss.on("connection", async (ws: WebSocket, _request: unknown, accountId: string)
 	ws.on("close", async () => {
 		clearInterval(refresh);
 		clearInterval(expiring);
+		clearTimeout(closeOnExpiry);
 		sockets.delete(connectionId);
 		await unsubscribe();
 		await registry.release(accountId, connectionId);

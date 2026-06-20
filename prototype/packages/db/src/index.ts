@@ -103,12 +103,18 @@ export class PgAccountStore implements AccountStore {
 			[input.username],
 		);
 		if (reserved.rowCount) throw new DomainError("USERNAME_TAKEN");
-		const result = await this.pool.query(
-			`INSERT INTO accounts(username, display_name, password_verifier, duress_verifier)
+		try {
+			const result = await this.pool.query(
+				`INSERT INTO accounts(username, display_name, password_verifier, duress_verifier)
        VALUES ($1,$2,$3,$4) RETURNING *`,
-			[input.username, input.displayName ?? null, input.passwordVerifier, input.duressVerifier ?? null],
-		);
-		return rowAccount(result.rows[0]);
+				[input.username, input.displayName ?? null, input.passwordVerifier, input.duressVerifier ?? null],
+			);
+			return rowAccount(result.rows[0]);
+		} catch (error) {
+			if (error && typeof error === "object" && "code" in error && error.code === "23505")
+				throw new DomainError("USERNAME_TAKEN");
+			throw error;
+		}
 	}
 
 	async findByUsername(username: string) {
@@ -119,6 +125,12 @@ export class PgAccountStore implements AccountStore {
 	async findById(accountId: string) {
 		const result = await this.pool.query("SELECT * FROM accounts WHERE account_id=$1", [accountId]);
 		return result.rows[0] ? rowAccount(result.rows[0]) : null;
+	}
+
+	async findByIds(accountIds: string[]) {
+		if (!accountIds.length) return [];
+		const result = await this.pool.query("SELECT * FROM accounts WHERE account_id = ANY($1::uuid[])", [accountIds]);
+		return result.rows.map(rowAccount);
 	}
 
 	async setDiscovery(accountId: string, discoverable: boolean) {
@@ -262,7 +274,7 @@ export class PgEnvelopeStore implements EnvelopeStore {
 			);
 			const row = counter.rows[0];
 			if (row.envelope_count + 1 > QUEUE_MAX_ENVELOPES || row.byte_count + input.byteSize > QUEUE_MAX_BYTES)
-				throw new DomainError("RECIPIENT_UNAVAILABLE");
+				throw new DomainError("QUEUE_FULL");
 			const inserted = await client.query(
 				`INSERT INTO envelopes(envelope_id, recipient_account_id, sender_account_id, client_message_id, ciphertext, signature, byte_size, expires_at)
          VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
@@ -389,9 +401,8 @@ export class RedisChallengeStore implements AuthChallengeStore {
 	}
 	async consume(challengeId: string) {
 		const key = `challenge:${challengeId}`;
-		const value = await this.redis.get(key);
+		const value = (await this.redis.call("GETDEL", key)) as string | null;
 		if (!value) return null;
-		await this.redis.del(key);
 		const parsed = JSON.parse(value);
 		return { accountId: parsed.accountId, nonce: parsed.nonce, expiresAt: new Date(parsed.expiresAt) };
 	}
@@ -410,10 +421,20 @@ export class RedisRateLimiter implements RateLimiter {
 export class RedisConnectionRegistry implements ConnectionRegistry {
 	constructor(private readonly redis: Redis) {}
 	async claim(accountId: string, connectionId: string, ttlSeconds: number) {
-		const key = `ws:owner:${accountId}`;
-		const previous = await this.redis.get(key);
-		await this.redis.set(key, connectionId, "EX", ttlSeconds);
-		await this.redis.set(`ws:conn:${connectionId}`, accountId, "EX", ttlSeconds);
+		const previous = (await this.redis.eval(
+			`
+local previous = redis.call("GET", KEYS[1])
+redis.call("SET", KEYS[1], ARGV[1], "EX", ARGV[3])
+redis.call("SET", KEYS[2], ARGV[2], "EX", ARGV[3])
+return previous
+`,
+			2,
+			`ws:owner:${accountId}`,
+			`ws:conn:${connectionId}`,
+			connectionId,
+			accountId,
+			String(ttlSeconds),
+		)) as string | null;
 		return previous && previous !== connectionId ? previous : null;
 	}
 	async refresh(accountId: string, connectionId: string, ttlSeconds: number) {

@@ -1,4 +1,4 @@
-import { createHmac, createHash } from "node:crypto";
+import { createHmac, createHash, timingSafeEqual } from "node:crypto";
 import { ACCESS_TOKEN_SECONDS } from "@prototype/contracts";
 import type { Clock, IdGenerator } from "./ports.js";
 
@@ -42,13 +42,31 @@ export class TokenIssuer {
 	}
 
 	verifyAccessToken(token: string): AccessClaims | null {
-		const [header, payload, signature] = token.split(".");
-		if (!header || !payload || !signature) return null;
-		const expected = createHmac("sha256", this.secret).update(`${header}.${payload}`).digest("base64url");
-		if (signature !== expected) return null;
-		const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as AccessClaims;
-		if (claims.exp <= Math.floor(this.clock.now().getTime() / 1000)) return null;
-		return claims;
+		try {
+			const [header, payload, signature, extra] = token.split(".");
+			if (!header || !payload || !signature || extra) return null;
+			const parsedHeader = JSON.parse(Buffer.from(header, "base64url").toString("utf8")) as {
+				alg?: unknown;
+				typ?: unknown;
+			};
+			if (parsedHeader.alg !== "HS256" || parsedHeader.typ !== "JWT") return null;
+			const expected = createHmac("sha256", this.secret).update(`${header}.${payload}`).digest("base64url");
+			const actualBuffer = Buffer.from(signature);
+			const expectedBuffer = Buffer.from(expected);
+			if (actualBuffer.length !== expectedBuffer.length || !timingSafeEqual(actualBuffer, expectedBuffer)) return null;
+			const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Partial<AccessClaims>;
+			if (
+				typeof claims.sub !== "string" ||
+				typeof claims.username !== "string" ||
+				typeof claims.tokenVersion !== "number" ||
+				typeof claims.exp !== "number"
+			)
+				return null;
+			if (claims.exp <= Math.floor(this.clock.now().getTime() / 1000)) return null;
+			return claims as AccessClaims;
+		} catch {
+			return null;
+		}
 	}
 
 	refreshToken(): string {

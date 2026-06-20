@@ -20,6 +20,7 @@ export interface AccountStore {
 	): Promise<Account>;
 	findByUsername(username: string): Promise<Account | null>;
 	findById(accountId: string): Promise<Account | null>;
+	findByIds(accountIds: string[]): Promise<Account[]>;
 	setDiscovery(accountId: string, discoverable: boolean): Promise<void>;
 	softDelete(accountId: string): Promise<void>;
 	reserveUsername(username: string): Promise<void>;

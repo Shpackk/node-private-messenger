@@ -38,5 +38,14 @@ describe("domain primitives", () => {
 		const verifier = await hasher.hash("password123");
 		await expect(hasher.verify("password123", verifier)).resolves.toBe(true);
 		await expect(hasher.verify("bad", verifier)).resolves.toBe(false);
+		await expect(hasher.verify("password123", "pbkdf2$nan$salt$digest")).resolves.toBe(false);
+	});
+
+	it("rejects malformed access tokens without throwing", () => {
+		const ids = new NodeIdGenerator();
+		const clock = new SystemClock();
+		const issuer = new TokenIssuer("test", clock, ids);
+		expect(issuer.verifyAccessToken("not.jwt")).toBeNull();
+		expect(issuer.verifyAccessToken("eyJhbGciOiJub25lIn0.e30.sig")).toBeNull();
 	});
 });
