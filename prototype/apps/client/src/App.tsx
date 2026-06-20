@@ -1,79 +1,50 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { canonicalEnvelopeBytes } from "@prototype/contracts";
+import { ApiError, api } from "./api";
+import { AuthScreen } from "./components/AuthScreen";
+import { ChatThread } from "./components/ChatThread";
+import { Composer } from "./components/Composer";
+import { ContactSidebar } from "./components/ContactSidebar";
+import { SettingsModal } from "./components/SettingsModal";
+import { Toast } from "./components/Toast";
+import { demoCiphertext, demoPlaintext, digest, uuid } from "./crypto";
+import { useMessengerSocket } from "./hooks/useMessengerSocket";
+import {
+	ACTIVE_PEER_STORAGE_PREFIX,
+	CONTACTS_STORAGE_PREFIX,
+	MESSAGES_STORAGE_PREFIX,
+	readStored,
+} from "./storage";
+import type {
+	AccountCreateResult,
+	AuthChallenge,
+	Contact,
+	ContactWithLastMessage,
+	DiscoveryResult,
+	EnvelopeList,
+	Message,
+	Session,
+} from "./types";
 import "./style.css";
 
-const API = import.meta.env.VITE_API_BASE ?? "http://localhost:3000";
-const WS = import.meta.env.VITE_WS_BASE ?? "ws://localhost:3000";
-
-type Session = {
-	account: { accountId: string; username: string };
-	accessToken: string;
-	refreshToken: string;
-};
-
-type Message = { id: string; from: string; text: string; direction: "in" | "out" };
-type AccountCreateResult = { username: string };
-type AuthChallenge = { challengeId: string };
-type DiscoveryResult = { accountId: string };
-type QueuedEnvelope = { envelopeId: string; senderAccountId: string; ciphertext: string };
-type EnvelopeList = { envelopes: QueuedEnvelope[] };
-type EnvelopeDelivery = { envelopeId: string; senderAccountId: string; ciphertext: string };
-
-async function digest(text: string) {
-	const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-	return btoa(String.fromCharCode(...new Uint8Array(bytes)))
-		.replace(/\+/g, "-")
-		.replace(/\//g, "_")
-		.replace(/=+$/, "");
-}
-
-function uuid() {
-	return crypto.randomUUID();
-}
-
-function demoCiphertext(text: string) {
-	const body = JSON.stringify({ v: 1, nonce: uuid(), body: btoa(text) });
-	return btoa(body).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function fromBase64Url(value: string) {
-	const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
-	const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
-	return atob(padded);
-}
-
-function demoPlaintext(ciphertext: string) {
-	try {
-		const decoded = JSON.parse(fromBase64Url(ciphertext)) as { body?: string };
-		return decoded.body ? atob(decoded.body) : "[could not decrypt demo ciphertext]";
-	} catch {
-		return "[could not decrypt demo ciphertext]";
-	}
-}
-
-async function api<T>(path: string, options: RequestInit = {}, session?: Session): Promise<T> {
-	const response = await fetch(`${API}${path}`, {
-		...options,
-		headers: {
-			"content-type": "application/json",
-			...(session ? { authorization: `Bearer ${session.accessToken}` } : {}),
-			...(options.headers ?? {}),
-		},
-	});
-	if (!response.ok) throw new Error((await response.json()).error?.message ?? response.statusText);
-	return response.json();
-}
-
 function App() {
-	const [session, setSession] = useState<Session | null>(() => JSON.parse(localStorage.getItem("session") ?? "null"));
+	const [session, setSession] = useState<Session | null>(() => readStored("session", null));
 	const [username, setUsername] = useState("");
 	const [password, setPassword] = useState("");
 	const [peerName, setPeerName] = useState("");
-	const [peerId, setPeerId] = useState("");
 	const [text, setText] = useState("");
-	const [messages, setMessages] = useState<Message[]>([]);
-	const [status, setStatus] = useState("offline");
+	const [activePeerId, setActivePeerId] = useState(() =>
+		session ? readStored(`${ACTIVE_PEER_STORAGE_PREFIX}${session.account.accountId}`, "") : "",
+	);
+	const [messages, setMessages] = useState<Message[]>(() =>
+		session ? readStored(`${MESSAGES_STORAGE_PREFIX}${session.account.accountId}`, []) : [],
+	);
+	const [contacts, setContacts] = useState<Contact[]>(() =>
+		session ? readStored(`${CONTACTS_STORAGE_PREFIX}${session.account.accountId}`, []) : [],
+	);
+	const [settingsOpen, setSettingsOpen] = useState(false);
+	const [errorMessage, setErrorMessage] = useState("");
 	const wsRef = useRef<WebSocket | null>(null);
 	const seenEnvelopeIdsRef = useRef(new Set<string>());
 
@@ -84,48 +55,99 @@ function App() {
 
 	useEffect(() => {
 		if (!session) return;
-		const ws = new WebSocket(`${WS}/v1/ws`, `bearer.${session.accessToken}`);
-		wsRef.current = ws;
-		ws.onopen = () => setStatus("online");
-		ws.onclose = () => setStatus("offline");
-		ws.onmessage = async (event) => {
-			const data = JSON.parse(event.data);
-			if (data.type === "envelope.deliver") {
-				const envelope = data.payload as EnvelopeDelivery;
-				if (!seenEnvelopeIdsRef.current.has(envelope.envelopeId)) {
-					seenEnvelopeIdsRef.current.add(envelope.envelopeId);
-					setMessages((current) => [
-						...current,
-						{
-							id: envelope.envelopeId,
-							from: envelope.senderAccountId,
-							text: demoPlaintext(envelope.ciphertext),
-							direction: "in",
-						},
-					]);
-				}
-				ws.send(JSON.stringify({ type: "envelope.ack", payload: { envelopeIds: [envelope.envelopeId] } }));
-				await api<{ acknowledged: number }>(
-					"/v1/envelopes/ack",
-					{
-						method: "POST",
-						body: JSON.stringify({ envelopeIds: [envelope.envelopeId] }),
-					},
-					session,
-				).catch(() => undefined);
-			}
-			if (data.type === "token.expiring") {
-				const next = await api<Session>("/v1/auth/refresh", {
-					method: "POST",
-					body: JSON.stringify({ refreshToken: session.refreshToken }),
-				});
-				setSession(next);
-			}
-		};
-		return () => ws.close();
-	}, [session]);
+		localStorage.setItem(`${CONTACTS_STORAGE_PREFIX}${session.account.accountId}`, JSON.stringify(contacts));
+	}, [contacts, session]);
 
-	const authed = useMemo(() => Boolean(session), [session]);
+	useEffect(() => {
+		if (!session) return;
+		localStorage.setItem(`${MESSAGES_STORAGE_PREFIX}${session.account.accountId}`, JSON.stringify(messages));
+	}, [messages, session]);
+
+	useEffect(() => {
+		if (!session) return;
+		localStorage.setItem(`${ACTIVE_PEER_STORAGE_PREFIX}${session.account.accountId}`, JSON.stringify(activePeerId));
+	}, [activePeerId, session]);
+
+	useEffect(() => {
+		if (!errorMessage) return;
+		const timeout = window.setTimeout(() => setErrorMessage(""), 5000);
+		return () => window.clearTimeout(timeout);
+	}, [errorMessage]);
+
+	const addContact = useCallback((contact: Contact) => {
+		setContacts((current) => {
+			if (current.some((item) => item.accountId === contact.accountId)) {
+				return current.map((item) => (item.accountId === contact.accountId ? { ...item, ...contact } : item));
+			}
+			return [...current, contact];
+		});
+	}, []);
+
+	const showError = useCallback((error: unknown) => {
+		const fallback = "Something went wrong. Try again.";
+		if (error instanceof ApiError) {
+			const messagesByCode: Record<string, string> = {
+				BAD_REQUEST: "Some information is invalid. Check the form and try again.",
+				UNAUTHORIZED: "Session expired. Log in again.",
+				FORBIDDEN: "You do not have permission to do that.",
+				NOT_FOUND: "No matching user was found.",
+				USERNAME_TAKEN: "That username is already taken.",
+				RECIPIENT_UNAVAILABLE: "That user cannot receive messages right now.",
+				QUEUE_FULL: "Recipient inbox is full. Try again later.",
+				RATE_LIMITED: "Too many attempts. Wait a moment and try again.",
+			};
+			setErrorMessage(messagesByCode[error.code ?? ""] ?? error.message ?? fallback);
+			return;
+		}
+		setErrorMessage(error instanceof Error ? error.message : fallback);
+	}, []);
+
+	const runAction = useCallback(
+		async (action: () => Promise<void>) => {
+			try {
+				await action();
+			} catch (error) {
+				showError(error);
+			}
+		},
+		[showError],
+	);
+
+	const handleIncomingMessage = useCallback((message: Message) => {
+		setMessages((current) => [...current, message]);
+	}, []);
+
+	useMessengerSocket({
+		session,
+		onIncomingMessage: handleIncomingMessage,
+		onContact: addContact,
+		onTokenRefresh: setSession,
+		onMalformedMessage: showError,
+		seenEnvelopeIdsRef,
+		wsRef,
+	});
+
+	const activeContact = useMemo(
+		() => contacts.find((contact) => contact.accountId === activePeerId),
+		[contacts, activePeerId],
+	);
+
+	const threadMessages = useMemo(
+		() => messages.filter((message) => message.peerId === activePeerId),
+		[messages, activePeerId],
+	);
+
+	const contactsWithLastMessage = useMemo<ContactWithLastMessage[]>(() => {
+		const lastMessageByPeer = new Map<string, Message>();
+		for (let index = messages.length - 1; index >= 0; index -= 1) {
+			const message = messages[index];
+			if (!lastMessageByPeer.has(message.peerId)) lastMessageByPeer.set(message.peerId, message);
+		}
+		return contacts.map((contact) => ({
+			...contact,
+			lastMessage: lastMessageByPeer.get(contact.accountId),
+		}));
+	}, [contacts, messages]);
 
 	async function register() {
 		const account = await api<AccountCreateResult>("/v1/accounts", {
@@ -145,6 +167,9 @@ function App() {
 			body: JSON.stringify({ challengeId: challenge.challengeId, username: name, password }),
 		});
 		setSession(tokens);
+		setContacts(readStored(`${CONTACTS_STORAGE_PREFIX}${tokens.account.accountId}`, []));
+		setMessages(readStored(`${MESSAGES_STORAGE_PREFIX}${tokens.account.accountId}`, []));
+		setActivePeerId(readStored(`${ACTIVE_PEER_STORAGE_PREFIX}${tokens.account.accountId}`, ""));
 		await api<{ ok: true }>(
 			"/v1/keys",
 			{
@@ -163,13 +188,15 @@ function App() {
 
 	async function discover() {
 		const found = await api<DiscoveryResult>(`/v1/discovery/${peerName}`, {}, session ?? undefined);
-		setPeerId(found.accountId);
+		addContact(found);
+		setActivePeerId(found.accountId);
+		setPeerName("");
 	}
 
 	async function send() {
-		if (!session || !peerId || !text) return;
+		if (!session || !activePeerId || !text) return;
 		const payload = {
-			recipientAccountId: peerId,
+			recipientAccountId: activePeerId,
 			senderAccountId: session.account.accountId,
 			clientMessageId: uuid(),
 			ciphertext: demoCiphertext(text),
@@ -177,16 +204,24 @@ function App() {
 		};
 		const signature = await digest(canonicalEnvelopeBytes({ ...payload, signature: "" }));
 		const event = { type: "envelope.submit", payload: { ...payload, signature } };
-		if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify(event));
-		else
+		if (wsRef.current?.readyState === WebSocket.OPEN) {
+			wsRef.current.send(JSON.stringify(event));
+		} else {
 			await api<{ envelopeId: string }>(
 				"/v1/envelopes",
 				{ method: "POST", body: JSON.stringify(event.payload) },
 				session,
 			);
+		}
 		setMessages((current) => [
 			...current,
-			{ id: payload.clientMessageId, from: session.account.username, text, direction: "out" },
+			{
+				id: payload.clientMessageId,
+				peerId: activePeerId,
+				from: session.account.username,
+				text,
+				direction: "out",
+			},
 		]);
 		setText("");
 	}
@@ -200,12 +235,14 @@ function App() {
 			...current,
 			...unseen.map((env) => ({
 				id: env.envelopeId,
+				peerId: env.senderAccountId,
 				from: env.senderAccountId,
 				text: demoPlaintext(env.ciphertext),
 				direction: "in" as const,
 			})),
 		]);
-		if (leased.envelopes.length)
+		for (const env of unseen) addContact(env.sender);
+		if (leased.envelopes.length) {
 			await api(
 				"/v1/envelopes/ack",
 				{
@@ -214,103 +251,100 @@ function App() {
 				},
 				currentSession,
 			);
+		}
+	}
+
+	async function setDiscoverable(discoverable: boolean) {
+		if (!session) return;
+		await api<{ ok: true }>(
+			"/v1/discovery",
+			{
+				method: "PUT",
+				body: JSON.stringify({ discoverable }),
+			},
+			session,
+		);
+		setSession((current) =>
+			current ? { ...current, account: { ...current.account, discoverable } } : current,
+		);
+	}
+
+	function logout() {
+		setSession(null);
+		setContacts([]);
+		setMessages([]);
+		setActivePeerId("");
+		setSettingsOpen(false);
+	}
+
+	const saveDebugPushToken = () =>
+		runAction(async () => {
+			if (!session) return;
+			await api<{ ok: true }>(
+				"/v1/push-token",
+				{
+					method: "PUT",
+					body: JSON.stringify({ platform: "debug", token: `debug-${uuid()}` }),
+				},
+				session,
+			);
+		});
+
+	const duressDeleteProbe = () =>
+		runAction(async () => {
+			if (!session) return;
+			await api<{ ok: true }>("/v1/account/duress-delete", {
+				method: "POST",
+				body: JSON.stringify({
+					username: session.account.username,
+					password: "duress",
+				}),
+			});
+		});
+
+	if (!session) {
+		return (
+			<>
+				<AuthScreen
+					username={username}
+					password={password}
+					onUsernameChange={setUsername}
+					onPasswordChange={setPassword}
+					onRegister={() => runAction(register)}
+					onLogin={() => runAction(() => login())}
+				/>
+				<Toast message={errorMessage} />
+			</>
+		);
 	}
 
 	return (
-		<main>
-			<section className="sidebar">
-				<h1>Local Messenger</h1>
-				<p className="muted">Status: {status}</p>
-				{!authed ? (
-					<div className="stack">
-						<input
-							placeholder="username"
-							value={username}
-							onChange={(event) => setUsername(event.target.value)}
-						/>
-						<input
-							placeholder="password"
-							type="password"
-							value={password}
-							onChange={(event) => setPassword(event.target.value)}
-						/>
-						<button type="button" onClick={register}>
-							Create Account
-						</button>
-						<button type="button" onClick={() => login()}>
-							Login
-						</button>
-					</div>
-				) : (
-					<div className="stack">
-						<strong>{session?.account.username}</strong>
-						<input
-							placeholder="peer username"
-							value={peerName}
-							onChange={(event) => setPeerName(event.target.value)}
-						/>
-						<button type="button" onClick={discover}>
-							Discover
-						</button>
-						<button
-							type="button"
-							onClick={() =>
-								session &&
-								api<{ ok: true }>(
-									"/v1/push-token",
-									{
-										method: "PUT",
-										body: JSON.stringify({ platform: "debug", token: `debug-${uuid()}` }),
-									},
-									session,
-								)
-							}
-						>
-							Save Debug Push Token
-						</button>
-						<details>
-							<summary>Developer</summary>
-							<button
-								type="button"
-								onClick={() =>
-									session &&
-									api<{ ok: true }>("/v1/account/duress-delete", {
-										method: "POST",
-										body: JSON.stringify({
-											username: session.account.username,
-											password: "duress",
-										}),
-									})
-								}
-							>
-								Duress Delete Probe
-							</button>
-						</details>
-						<button type="button" onClick={() => setSession(null)}>
-							Logout
-						</button>
-					</div>
-				)}
-			</section>
+		<main className="messenger">
+			<ContactSidebar
+				account={session.account}
+				peerName={peerName}
+				contacts={contactsWithLastMessage}
+				activePeerId={activePeerId}
+				onPeerNameChange={setPeerName}
+				onDiscover={() => runAction(discover)}
+				onSelectPeer={setActivePeerId}
+				onOpenSettings={() => setSettingsOpen(true)}
+				onSaveDebugPushToken={saveDebugPushToken}
+				onDuressDeleteProbe={duressDeleteProbe}
+			/>
 			<section className="chat">
-				<div className="messages">
-					{messages.map((message) => (
-						<div key={message.id} className={`bubble ${message.direction}`}>
-							{message.text}
-						</div>
-					))}
-				</div>
-				<div className="composer">
-					<input
-						placeholder={peerId ? "message" : "discover peer first"}
-						value={text}
-						onChange={(event) => setText(event.target.value)}
-					/>
-					<button type="button" disabled={!peerId || !text} onClick={send}>
-						Send
-					</button>
-				</div>
+				<ChatThread activeContact={activeContact} messages={threadMessages} />
+				<Composer activePeerId={activePeerId} text={text} onTextChange={setText} onSend={() => runAction(send)} />
 			</section>
+			{settingsOpen && (
+				<SettingsModal
+					discoverable={session.account.discoverable}
+					onClose={() => setSettingsOpen(false)}
+					onDiscoverableChange={(value) => runAction(() => setDiscoverable(value))}
+					onLogout={logout}
+				/>
+			)}
+			<Toast message={errorMessage} />
 		</main>
 	);
 }

@@ -162,6 +162,10 @@ export const EnvelopeRecord = z
 	})
 	.strict();
 
+export const EnvelopeDeliveryRecord = EnvelopeRecord.extend({
+	sender: DiscoveryResponse,
+}).strict();
+
 export const EnvelopeAcceptedResponse = z
 	.object({
 		envelopeId: z.string().uuid(),
@@ -172,7 +176,7 @@ export const EnvelopeAcceptedResponse = z
 export const EnvelopeListResponse = z
 	.object({
 		leaseId: z.string().uuid(),
-		envelopes: z.array(EnvelopeRecord).max(100),
+		envelopes: z.array(EnvelopeDeliveryRecord).max(100),
 	})
 	.strict();
 
@@ -195,7 +199,7 @@ export const WsClientEvent = z.discriminatedUnion("type", [
 ]);
 
 export const WsServerEvent = z.discriminatedUnion("type", [
-	z.object({ type: z.literal("envelope.deliver"), payload: EnvelopeRecord }).strict(),
+	z.object({ type: z.literal("envelope.deliver"), payload: EnvelopeDeliveryRecord }).strict(),
 	z.object({ type: z.literal("envelope.accepted"), payload: EnvelopeAcceptedResponse }).strict(),
 	z.object({ type: z.literal("pong"), id: z.string().optional() }).strict(),
 	z.object({ type: z.literal("token.expiring"), expiresAt: z.string().datetime() }).strict(),

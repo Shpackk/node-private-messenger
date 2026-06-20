@@ -111,6 +111,19 @@ async function auth(c: Context) {
 const app = new Hono();
 app.use("*", cors());
 
+async function withSender(record: Awaited<ReturnType<typeof service.submitEnvelope>>) {
+	const sender = await accounts.findById(record.senderAccountId);
+	if (!sender || sender.deletedAt) throw new DomainError("NOT_FOUND");
+	return {
+		...record,
+		sender: {
+			accountId: sender.accountId,
+			username: sender.username,
+			displayName: sender.displayName,
+		},
+	};
+}
+
 app.onError((error, c) => {
 	const mapped = mapError(error);
 	return c.json(mapped.body, mapped.status);
@@ -177,14 +190,18 @@ app.post("/v1/envelopes", async (c) => {
 	if (body.senderAccountId !== account.accountId) throw new DomainError("FORBIDDEN");
 	const record = await service.submitEnvelope(body);
 	const liveOwner = await registry.owner(record.recipientAccountId);
-	if (liveOwner) await registry.publish(record.recipientAccountId, { type: "envelope.deliver", payload: record });
+	if (liveOwner)
+		await registry.publish(record.recipientAccountId, {
+			type: "envelope.deliver",
+			payload: await withSender(record),
+		});
 	else await push.wake(record.recipientAccountId, "envelope.pending");
 	return c.json({ envelopeId: record.envelopeId, clientMessageId: record.clientMessageId });
 });
 app.get("/v1/envelopes", async (c) => {
 	const account = await auth(c);
 	const leased = await service.leaseEnvelopes(account.accountId);
-	return c.json({ leaseId: leased[0]?.leaseId ?? ids.uuid(), envelopes: leased });
+	return c.json({ leaseId: leased[0]?.leaseId ?? ids.uuid(), envelopes: await Promise.all(leased.map(withSender)) });
 });
 app.post("/v1/envelopes/ack", async (c) => {
 	const account = await auth(c);
@@ -257,7 +274,10 @@ wss.on("connection", async (ws: WebSocket, _request: unknown, accountId: string)
 				);
 				const liveOwner = await registry.owner(record.recipientAccountId);
 				if (liveOwner)
-					await registry.publish(record.recipientAccountId, { type: "envelope.deliver", payload: record });
+					await registry.publish(record.recipientAccountId, {
+						type: "envelope.deliver",
+						payload: await withSender(record),
+					});
 				else await push.wake(record.recipientAccountId, "envelope.pending");
 			}
 		} catch (error) {
