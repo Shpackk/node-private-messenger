@@ -272,6 +272,8 @@ summary {
 
 .settings-panel {
 	width: min(100%, 420px);
+	max-height: calc(100dvh - 48px);
+	overflow: auto;
 	padding: 22px;
 	border-radius: 16px;
 	background: #ffffff;
@@ -298,6 +300,48 @@ summary {
 .toggle-row input {
 	width: 22px;
 	min-height: 22px;
+}
+
+.settings-block {
+	display: grid;
+	gap: 12px;
+	margin-top: 22px;
+}
+
+.settings-block > div:first-child {
+	display: grid;
+	gap: 4px;
+}
+
+.settings-block small {
+	color: #64748b;
+}
+
+.secret-box {
+	display: grid;
+	gap: 6px;
+	padding: 10px;
+	border: 1px solid #dbe3ef;
+	border-radius: 10px;
+	background: #f8fafc;
+}
+
+.qr-code {
+	width: min(220px, 100%);
+	aspect-ratio: 1;
+	margin: 0 auto 8px;
+	border: 10px solid #ffffff;
+	border-radius: 8px;
+	background: #ffffff;
+}
+
+.copy-button {
+	min-height: 30px;
+	padding: 0 10px;
+	border-radius: 8px;
+	background: #e0ecff;
+	color: #1d4ed8;
+	font-size: 12px;
 }
 
 .danger-button {

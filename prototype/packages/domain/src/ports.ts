@@ -12,16 +12,30 @@ export type Account = z.infer<typeof AccountResponse> & {
 	tokenVersion: number;
 	deletedAt: Date | null;
 	duressVerifier: string | null;
+	mfaSecretCiphertext: string | null;
+	mfaSecretIv: string | null;
+	mfaSecretSalt: string | null;
+	mfaEnabledAt: Date | null;
 };
 
 export interface AccountStore {
 	create(
-		input: z.infer<typeof AccountCreateRequest> & { passwordVerifier: string; duressVerifier?: string | null },
+		input: z.infer<typeof AccountCreateRequest> & {
+			passwordVerifier: string;
+			duressVerifier?: string | null;
+			mfaSecretCiphertext: string;
+			mfaSecretIv: string;
+			mfaSecretSalt: string;
+		},
 	): Promise<Account>;
 	findByUsername(username: string): Promise<Account | null>;
 	findById(accountId: string): Promise<Account | null>;
 	findByIds(accountIds: string[]): Promise<Account[]>;
 	setDiscovery(accountId: string, discoverable: boolean): Promise<void>;
+	enableMfa(
+		accountId: string,
+		input: { secretCiphertext: string; secretIv: string; secretSalt: string },
+	): Promise<Account>;
 	softDelete(accountId: string): Promise<void>;
 	reserveUsername(username: string): Promise<void>;
 }
@@ -32,6 +46,7 @@ export interface AuthChallengeStore {
 		nonce: string,
 		expiresAt: Date,
 	): Promise<{ challengeId: string; nonce: string; expiresAt: Date }>;
+	get(challengeId: string): Promise<{ accountId: string; nonce: string; expiresAt: Date } | null>;
 	consume(challengeId: string): Promise<{ accountId: string; nonce: string; expiresAt: Date } | null>;
 }
 
@@ -97,6 +112,14 @@ export interface IdGenerator {
 export interface PasswordHasher {
 	hash(password: string): Promise<string>;
 	verify(password: string, verifier: string): Promise<boolean>;
+}
+
+export interface MfaProvider {
+	generateSecret(): string;
+	otpauthUrl(input: { issuer: string; accountName: string; secret: string }): string;
+	encryptSecret(secret: string, password: string): Promise<{ ciphertext: string; iv: string; salt: string }>;
+	decryptSecret(input: { ciphertext: string; iv: string; salt: string }, password: string): Promise<string | null>;
+	verifyCode(secret: string, code: string): boolean;
 }
 
 export interface DemoCryptoProvider {

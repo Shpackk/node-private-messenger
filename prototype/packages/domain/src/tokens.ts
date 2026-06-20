@@ -53,7 +53,8 @@ export class TokenIssuer {
 			const expected = createHmac("sha256", this.secret).update(`${header}.${payload}`).digest("base64url");
 			const actualBuffer = Buffer.from(signature);
 			const expectedBuffer = Buffer.from(expected);
-			if (actualBuffer.length !== expectedBuffer.length || !timingSafeEqual(actualBuffer, expectedBuffer)) return null;
+			if (actualBuffer.length !== expectedBuffer.length || !timingSafeEqual(actualBuffer, expectedBuffer))
+				return null;
 			const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Partial<AccessClaims>;
 			if (
 				typeof claims.sub !== "string" ||

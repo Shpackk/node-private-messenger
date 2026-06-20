@@ -10,20 +10,17 @@ import { SettingsModal } from "./components/SettingsModal";
 import { Toast } from "./components/Toast";
 import { demoCiphertext, demoPlaintext, digest, uuid } from "./crypto";
 import { useMessengerSocket } from "./hooks/useMessengerSocket";
-import {
-	ACTIVE_PEER_STORAGE_PREFIX,
-	CONTACTS_STORAGE_PREFIX,
-	MESSAGES_STORAGE_PREFIX,
-	readStored,
-} from "./storage";
+import { ACTIVE_PEER_STORAGE_PREFIX, CONTACTS_STORAGE_PREFIX, MESSAGES_STORAGE_PREFIX, readStored } from "./storage";
 import type {
 	AccountCreateResult,
 	AuthChallenge,
+	AuthVerifyResult,
 	Contact,
 	ContactWithLastMessage,
 	DiscoveryResult,
 	EnvelopeList,
 	Message,
+	RegistrationMfaSetup,
 	Session,
 } from "./types";
 import "./style.css";
@@ -32,6 +29,10 @@ function App() {
 	const [session, setSession] = useState<Session | null>(() => readStored("session", null));
 	const [username, setUsername] = useState("");
 	const [password, setPassword] = useState("");
+	const [mfaCode, setMfaCode] = useState("");
+	const [mfaChallengeId, setMfaChallengeId] = useState("");
+	const [registrationMfaSetup, setRegistrationMfaSetup] = useState<RegistrationMfaSetup | null>(null);
+	const [registrationMfaCode, setRegistrationMfaCode] = useState("");
 	const [peerName, setPeerName] = useState("");
 	const [text, setText] = useState("");
 	const [activePeerId, setActivePeerId] = useState(() =>
@@ -87,7 +88,10 @@ function App() {
 		const fallback = "Something went wrong. Try again.";
 		if (error instanceof ApiError) {
 			const messagesByCode: Record<string, string> = {
-				BAD_REQUEST: "Some information is invalid. Check the form and try again.",
+				BAD_REQUEST:
+					error.message === "invalid authenticator code"
+						? "Authenticator code is invalid. Check the code and try again."
+						: "Some information is invalid. Check the form and try again.",
 				UNAUTHORIZED: "Session expired. Log in again.",
 				FORBIDDEN: "You do not have permission to do that.",
 				NOT_FOUND: "No matching user was found.",
@@ -149,24 +153,40 @@ function App() {
 		}));
 	}, [contacts, messages]);
 
-	async function register() {
-		const account = await api<AccountCreateResult>("/v1/accounts", {
-			method: "POST",
-			body: JSON.stringify({ username, password }),
-		});
-		await login(account.username);
+	function updateUsername(value: string) {
+		setUsername(value);
+		setRegistrationMfaSetup(null);
+		setRegistrationMfaCode("");
 	}
 
-	async function login(name = username) {
-		const challenge = await api<AuthChallenge>("/v1/auth/challenges", {
+	async function register() {
+		if (!registrationMfaSetup) {
+			const setup = await api<RegistrationMfaSetup>("/v1/mfa/registration/setup", {
+				method: "POST",
+				body: JSON.stringify({ username }),
+			});
+			setRegistrationMfaSetup(setup);
+			setRegistrationMfaCode("");
+			return;
+		}
+		const account = await api<AccountCreateResult>("/v1/accounts", {
 			method: "POST",
-			body: JSON.stringify({ username: name }),
+			body: JSON.stringify({
+				username,
+				password,
+				mfaSecret: registrationMfaSetup.secret,
+				mfaCode: registrationMfaCode,
+			}),
 		});
-		const tokens = await api<Session>("/v1/auth/verify", {
-			method: "POST",
-			body: JSON.stringify({ challengeId: challenge.challengeId, username: name, password }),
-		});
+		setRegistrationMfaSetup(null);
+		setRegistrationMfaCode("");
+		await login(account.username, registrationMfaCode);
+	}
+
+	async function finishLogin(tokens: Session, name: string) {
 		setSession(tokens);
+		setMfaChallengeId("");
+		setMfaCode("");
 		setContacts(readStored(`${CONTACTS_STORAGE_PREFIX}${tokens.account.accountId}`, []));
 		setMessages(readStored(`${MESSAGES_STORAGE_PREFIX}${tokens.account.accountId}`, []));
 		setActivePeerId(readStored(`${ACTIVE_PEER_STORAGE_PREFIX}${tokens.account.accountId}`, ""));
@@ -184,6 +204,32 @@ function App() {
 			tokens,
 		);
 		await pullQueued(tokens);
+	}
+
+	async function login(name = username, code = mfaCode) {
+		const challengeId =
+			mfaChallengeId ||
+			(
+				await api<AuthChallenge>("/v1/auth/challenges", {
+					method: "POST",
+					body: JSON.stringify({ username: name }),
+				})
+			).challengeId;
+		const result = await api<AuthVerifyResult>("/v1/auth/verify", {
+			method: "POST",
+			body: JSON.stringify({
+				challengeId,
+				username: name,
+				password,
+				...(code ? { mfaCode: code } : {}),
+			}),
+		});
+		if ("mfaRequired" in result) {
+			setMfaChallengeId(result.challengeId);
+			setMfaCode("");
+			return;
+		}
+		await finishLogin(result, name);
 	}
 
 	async function discover() {
@@ -264,9 +310,7 @@ function App() {
 			},
 			session,
 		);
-		setSession((current) =>
-			current ? { ...current, account: { ...current.account, discoverable } } : current,
-		);
+		setSession((current) => (current ? { ...current, account: { ...current.account, discoverable } } : current));
 	}
 
 	function logout() {
@@ -275,6 +319,11 @@ function App() {
 		setMessages([]);
 		setActivePeerId("");
 		setSettingsOpen(false);
+	}
+
+	async function copyRegistrationMfaUri() {
+		if (!registrationMfaSetup) return;
+		await navigator.clipboard.writeText(registrationMfaSetup.otpauthUrl);
 	}
 
 	const saveDebugPushToken = () =>
@@ -308,8 +357,15 @@ function App() {
 				<AuthScreen
 					username={username}
 					password={password}
-					onUsernameChange={setUsername}
+					mfaRequired={Boolean(mfaChallengeId)}
+					mfaCode={mfaCode}
+					registrationMfaSetup={registrationMfaSetup}
+					registrationMfaCode={registrationMfaCode}
+					onUsernameChange={updateUsername}
 					onPasswordChange={setPassword}
+					onMfaCodeChange={setMfaCode}
+					onRegistrationMfaCodeChange={setRegistrationMfaCode}
+					onCopyRegistrationMfaUri={() => runAction(copyRegistrationMfaUri)}
 					onRegister={() => runAction(register)}
 					onLogin={() => runAction(() => login())}
 				/>
@@ -334,11 +390,17 @@ function App() {
 			/>
 			<section className="chat">
 				<ChatThread activeContact={activeContact} messages={threadMessages} />
-				<Composer activePeerId={activePeerId} text={text} onTextChange={setText} onSend={() => runAction(send)} />
+				<Composer
+					activePeerId={activePeerId}
+					text={text}
+					onTextChange={setText}
+					onSend={() => runAction(send)}
+				/>
 			</section>
 			{settingsOpen && (
 				<SettingsModal
 					discoverable={session.account.discoverable}
+					mfaEnabled={session.account.mfaEnabled}
 					onClose={() => setSettingsOpen(false)}
 					onDiscoverableChange={(value) => runAction(() => setDiscoverable(value))}
 					onLogout={logout}

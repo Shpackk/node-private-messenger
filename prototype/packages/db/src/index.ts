@@ -42,6 +42,10 @@ type AccountRow = {
 	token_version: number;
 	deleted_at: Date | null;
 	duress_verifier: string | null;
+	mfa_secret_ciphertext: string | null;
+	mfa_secret_iv: string | null;
+	mfa_secret_salt: string | null;
+	mfa_enabled_at: Date | null;
 };
 
 type EnvelopeRow = {
@@ -59,6 +63,9 @@ type EnvelopeRow = {
 type CreateAccountInput = z.infer<typeof AccountCreateRequest> & {
 	passwordVerifier: string;
 	duressVerifier?: string | null;
+	mfaSecretCiphertext: string;
+	mfaSecretIv: string;
+	mfaSecretSalt: string;
 };
 
 type EnqueueEnvelopeInput = z.infer<typeof EnvelopeSubmitRequest> & {
@@ -77,6 +84,11 @@ function rowAccount(row: AccountRow): Account {
 		tokenVersion: row.token_version,
 		deletedAt: row.deleted_at,
 		duressVerifier: row.duress_verifier,
+		mfaEnabled: Boolean(row.mfa_enabled_at),
+		mfaSecretCiphertext: row.mfa_secret_ciphertext,
+		mfaSecretIv: row.mfa_secret_iv,
+		mfaSecretSalt: row.mfa_secret_salt,
+		mfaEnabledAt: row.mfa_enabled_at,
 	};
 }
 
@@ -105,9 +117,17 @@ export class PgAccountStore implements AccountStore {
 		if (reserved.rowCount) throw new DomainError("USERNAME_TAKEN");
 		try {
 			const result = await this.pool.query(
-				`INSERT INTO accounts(username, display_name, password_verifier, duress_verifier)
-       VALUES ($1,$2,$3,$4) RETURNING *`,
-				[input.username, input.displayName ?? null, input.passwordVerifier, input.duressVerifier ?? null],
+				`INSERT INTO accounts(username, display_name, password_verifier, duress_verifier, mfa_secret_ciphertext, mfa_secret_iv, mfa_secret_salt, mfa_enabled_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,now()) RETURNING *`,
+				[
+					input.username,
+					input.displayName ?? null,
+					input.passwordVerifier,
+					input.duressVerifier ?? null,
+					input.mfaSecretCiphertext,
+					input.mfaSecretIv,
+					input.mfaSecretSalt,
+				],
 			);
 			return rowAccount(result.rows[0]);
 		} catch (error) {
@@ -135,6 +155,18 @@ export class PgAccountStore implements AccountStore {
 
 	async setDiscovery(accountId: string, discoverable: boolean) {
 		await this.pool.query("UPDATE accounts SET discoverable=$2 WHERE account_id=$1", [accountId, discoverable]);
+	}
+
+	async enableMfa(accountId: string, input: { secretCiphertext: string; secretIv: string; secretSalt: string }) {
+		const result = await this.pool.query(
+			`UPDATE accounts
+       SET mfa_secret_ciphertext=$2, mfa_secret_iv=$3, mfa_secret_salt=$4, mfa_enabled_at=now()
+       WHERE account_id=$1 AND mfa_enabled_at IS NULL
+       RETURNING *`,
+			[accountId, input.secretCiphertext, input.secretIv, input.secretSalt],
+		);
+		if (!result.rows[0]) throw new DomainError("BAD_REQUEST", "mfa already enabled");
+		return rowAccount(result.rows[0]);
 	}
 
 	async softDelete(accountId: string) {
@@ -398,6 +430,12 @@ export class RedisChallengeStore implements AuthChallengeStore {
 			120,
 		);
 		return { challengeId, nonce, expiresAt };
+	}
+	async get(challengeId: string) {
+		const value = await this.redis.get(`challenge:${challengeId}`);
+		if (!value) return null;
+		const parsed = JSON.parse(value);
+		return { accountId: parsed.accountId, nonce: parsed.nonce, expiresAt: new Date(parsed.expiresAt) };
 	}
 	async consume(challengeId: string) {
 		const key = `challenge:${challengeId}`;

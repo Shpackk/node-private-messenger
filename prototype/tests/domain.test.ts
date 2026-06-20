@@ -5,6 +5,7 @@ import {
 	Pbkdf2PasswordHasher,
 	SystemClock,
 	TokenIssuer,
+	TotpMfaProvider,
 } from "../packages/domain/src/index.js";
 import { canonicalEnvelopeBytes } from "../packages/contracts/src/index.js";
 
@@ -39,6 +40,27 @@ describe("domain primitives", () => {
 		await expect(hasher.verify("password123", verifier)).resolves.toBe(true);
 		await expect(hasher.verify("bad", verifier)).resolves.toBe(false);
 		await expect(hasher.verify("password123", "pbkdf2$nan$salt$digest")).resolves.toBe(false);
+	});
+
+	it("wraps MFA secrets with the account password", async () => {
+		const mfa = new TotpMfaProvider();
+		const secret = mfa.generateSecret();
+		const encrypted = await mfa.encryptSecret(secret, "password123");
+		await expect(mfa.decryptSecret(encrypted, "password123")).resolves.toBe(secret);
+		await expect(mfa.decryptSecret(encrypted, "bad")).resolves.toBeNull();
+	});
+
+	it("verifies TOTP codes with Oslo", () => {
+		const mfa = new TotpMfaProvider();
+		const realNow = Date.now;
+		Date.now = () => 90_000;
+		try {
+			const secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+			expect(mfa.verifyCode(secret, "287082")).toBe(true);
+			expect(mfa.verifyCode(secret, "000000")).toBe(false);
+		} finally {
+			Date.now = realNow;
+		}
 	});
 
 	it("rejects malformed access tokens without throwing", () => {

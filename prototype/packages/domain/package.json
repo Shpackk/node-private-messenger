@@ -7,6 +7,8 @@
 		"build": "tsc --noEmit"
 	},
 	"dependencies": {
+		"@oslojs/encoding": "^1.1.0",
+		"@oslojs/otp": "^1.1.0",
 		"@prototype/contracts": "workspace:*"
 	}
 }

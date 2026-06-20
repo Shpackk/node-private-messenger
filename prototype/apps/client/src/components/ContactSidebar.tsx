@@ -38,7 +38,11 @@ export const ContactSidebar = memo(function ContactSidebar({
 				</button>
 			</div>
 			<div className="discover">
-				<input placeholder="peer username" value={peerName} onChange={(event) => onPeerNameChange(event.target.value)} />
+				<input
+					placeholder="peer username"
+					value={peerName}
+					onChange={(event) => onPeerNameChange(event.target.value)}
+				/>
 				<button type="button" onClick={onDiscover}>
 					Add
 				</button>
@@ -51,7 +55,9 @@ export const ContactSidebar = memo(function ContactSidebar({
 						className={`contact ${contact.accountId === activePeerId ? "active" : ""}`}
 						onClick={() => onSelectPeer(contact.accountId)}
 					>
-						<span className="avatar">{(contact.displayName ?? contact.username).slice(0, 1).toUpperCase()}</span>
+						<span className="avatar">
+							{(contact.displayName ?? contact.username).slice(0, 1).toUpperCase()}
+						</span>
 						<span className="contact-copy">
 							<strong>{contact.displayName ?? contact.username}</strong>
 							<span>

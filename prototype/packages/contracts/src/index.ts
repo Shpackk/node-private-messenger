@@ -12,6 +12,7 @@ export const REFRESH_TOKEN_SECONDS = 30 * 24 * 60 * 60;
 export const errorCodes = [
 	"BAD_REQUEST",
 	"UNAUTHORIZED",
+	"MFA_REQUIRED",
 	"FORBIDDEN",
 	"NOT_FOUND",
 	"USERNAME_TAKEN",
@@ -48,6 +49,8 @@ export const AccountCreateRequest = z
 		password: z.string().min(8).max(256),
 		displayName: z.string().max(80).optional(),
 		duressPassword: z.string().min(8).max(256).optional(),
+		mfaSecret: z.string().min(16),
+		mfaCode: z.string().regex(/^[0-9]{6}$/),
 	})
 	.strict();
 
@@ -57,6 +60,7 @@ export const AccountResponse = z
 		username,
 		displayName: z.string().nullable(),
 		discoverable: z.boolean(),
+		mfaEnabled: z.boolean(),
 	})
 	.strict();
 
@@ -79,6 +83,10 @@ export const AuthVerifyRequest = z
 		challengeId: z.string().uuid(),
 		username,
 		password: z.string().min(1).max(256),
+		mfaCode: z
+			.string()
+			.regex(/^[0-9]{6}$/)
+			.optional(),
 	})
 	.strict();
 
@@ -88,6 +96,42 @@ export const AuthTokensResponse = z
 		accessToken: z.string(),
 		refreshToken: z.string(),
 		expiresAt: z.string().datetime(),
+	})
+	.strict();
+
+export const AuthMfaRequiredResponse = z
+	.object({
+		mfaRequired: z.literal(true),
+		challengeId: z.string().uuid(),
+	})
+	.strict();
+
+export const AuthVerifyResponse = z.union([AuthTokensResponse, AuthMfaRequiredResponse]);
+
+export const MfaSetupStartRequest = z
+	.object({
+		password: z.string().min(1).max(256),
+	})
+	.strict();
+
+export const MfaRegistrationSetupRequest = z
+	.object({
+		username,
+	})
+	.strict();
+
+export const MfaSetupStartResponse = z
+	.object({
+		secret: z.string().min(16),
+		otpauthUrl: z.string().min(1),
+	})
+	.strict();
+
+export const MfaSetupConfirmRequest = z
+	.object({
+		password: z.string().min(1).max(256),
+		secret: z.string().min(16),
+		code: z.string().regex(/^[0-9]{6}$/),
 	})
 	.strict();
 

@@ -14,6 +14,9 @@ import {
 	EnvelopeAckRequest,
 	EnvelopeSubmitRequest,
 	KeyBundle,
+	MfaRegistrationSetupRequest,
+	MfaSetupConfirmRequest,
+	MfaSetupStartRequest,
 	PushTokenRequest,
 	RefreshRequest,
 	WsClientEvent,
@@ -27,6 +30,7 @@ import {
 	Pbkdf2PasswordHasher,
 	SystemClock,
 	TokenIssuer,
+	TotpMfaProvider,
 } from "@prototype/domain";
 import {
 	migrate,
@@ -70,6 +74,7 @@ const service = new MessengerService(
 	envelopes,
 	push,
 	new Pbkdf2PasswordHasher(),
+	new TotpMfaProvider(),
 	new DemoCrypto(),
 	clock,
 	ids,
@@ -176,6 +181,11 @@ app.post("/v1/auth/verify", async (c) => {
 app.post("/v1/auth/refresh", async (c) =>
 	c.json(await service.refresh(RefreshRequest.parse(await c.req.json()).refreshToken)),
 );
+app.post("/v1/mfa/registration/setup", async (c) => {
+	const body = MfaRegistrationSetupRequest.parse(await c.req.json());
+	await requireRateLimit("mfa.registration", body.username, 5, 60);
+	return c.json(service.createMfaRegistrationSetup(body.username));
+});
 app.get("/v1/usernames/:username/available", async (c) => {
 	const existing = await accounts.findByUsername(c.req.param("username").trim().toLowerCase());
 	return c.json({ available: !existing || Boolean(existing.deletedAt) });
@@ -189,6 +199,18 @@ app.delete("/v1/discovery", async (c) => {
 	const account = await auth(c);
 	await accounts.setDiscovery(account.accountId, false);
 	return c.json({ ok: true });
+});
+app.post("/v1/mfa/setup/start", async (c) => {
+	const account = await auth(c);
+	await requireRateLimit("mfa.setup", account.accountId, 5, 60);
+	const body = MfaSetupStartRequest.parse(await c.req.json());
+	return c.json(await service.startMfaSetup(account.accountId, body.password));
+});
+app.post("/v1/mfa/setup/confirm", async (c) => {
+	const account = await auth(c);
+	await requireRateLimit("mfa.confirm", account.accountId, 10, 60);
+	const body = MfaSetupConfirmRequest.parse(await c.req.json());
+	return c.json(await service.confirmMfaSetup(account.accountId, body));
 });
 app.get("/v1/discovery/:username", async (c) => c.json(await service.discover(c.req.param("username"))));
 app.post("/v1/keys", async (c) => {
@@ -294,13 +316,18 @@ wss.on("connection", async (ws: WebSocket, _request: unknown, accountId: string,
 	const expiring = setInterval(
 		() =>
 			ws.readyState === ws.OPEN && Date.now() >= tokenExpiresAtMs - ACCESS_TOKEN_SECONDS * 500
-				? ws.send(JSON.stringify({ type: "token.expiring", expiresAt: new Date(tokenExpiresAtMs).toISOString() }))
+				? ws.send(
+						JSON.stringify({ type: "token.expiring", expiresAt: new Date(tokenExpiresAtMs).toISOString() }),
+					)
 				: undefined,
 		30000,
 	);
-	const closeOnExpiry = setTimeout(() => {
-		if (ws.readyState === ws.OPEN) ws.close(4001, "access token expired");
-	}, Math.max(tokenExpiresAtMs - Date.now(), 0));
+	const closeOnExpiry = setTimeout(
+		() => {
+			if (ws.readyState === ws.OPEN) ws.close(4001, "access token expired");
+		},
+		Math.max(tokenExpiresAtMs - Date.now(), 0),
+	);
 	ws.on("message", async (raw) => {
 		try {
 			const event = WsClientEvent.parse(JSON.parse(raw.toString()));

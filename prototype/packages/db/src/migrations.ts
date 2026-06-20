@@ -9,8 +9,16 @@ export const migrations = [
     token_version integer NOT NULL DEFAULT 1,
     deleted_at timestamptz,
     duress_verifier text,
+    mfa_secret_ciphertext text,
+    mfa_secret_iv text,
+    mfa_secret_salt text,
+    mfa_enabled_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now()
   )`,
+	"ALTER TABLE accounts ADD COLUMN IF NOT EXISTS mfa_secret_ciphertext text",
+	"ALTER TABLE accounts ADD COLUMN IF NOT EXISTS mfa_secret_iv text",
+	"ALTER TABLE accounts ADD COLUMN IF NOT EXISTS mfa_secret_salt text",
+	"ALTER TABLE accounts ADD COLUMN IF NOT EXISTS mfa_enabled_at timestamptz",
 	`CREATE TABLE IF NOT EXISTS username_reservations (
     username text PRIMARY KEY,
     reserved_until timestamptz NOT NULL
