@@ -1,0 +1,11 @@
+node_modules
+dist
+coverage
+cdk.out
+**/cdk.out
+**/cdk.*.out
+.git
+.env*
+.npm-cache
+.pnpm-store
+.corepack

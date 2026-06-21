@@ -1,0 +1,45 @@
+{
+	"$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
+	"files": {
+		"ignore": [
+			"node_modules",
+			"dist",
+			"coverage",
+			"**/cdk.out",
+			"**/cdk.*.out",
+			".pnpm-store",
+			".corepack",
+			".npm-cache",
+			".docker-config",
+			"pnpm-lock.yaml"
+		]
+	},
+	"formatter": {
+		"enabled": true,
+		"formatWithErrors": false,
+		"indentStyle": "tab",
+		"indentWidth": 4,
+		"lineWidth": 100
+	},
+	"organizeImports": {
+		"enabled": true
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"recommended": true
+		}
+	},
+	"javascript": {
+		"formatter": {
+			"quoteStyle": "double",
+			"semicolons": "always",
+			"trailingCommas": "all"
+		}
+	},
+	"json": {
+		"formatter": {
+			"trailingCommas": "none"
+		}
+	}
+}
