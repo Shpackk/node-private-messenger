@@ -1,5 +1,6 @@
 # Private Messenger Backend
 
+A prototype app in `prototype/*` + top level AWS architecture for:
 Security-focused relay backend for a one-device, one-to-one E2EE messenger. Service never accepts
 plaintext messages or client private keys. It stores opaque ciphertext only until authenticated
 delivery acknowledgment or expiry.
