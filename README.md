@@ -20,6 +20,7 @@ delivery acknowledgment or expiry.
 - `packages/contracts`: strict client/server wire schemas
 - `packages/infra`: AWS CDK stack
 - `docs/protocol.md`: signing rules, API behavior, and client contract
+- `prototype/*`: Launchable prototype with PG and Redis + React/Vite app. Diverged from the AWS stack
 
 ## Security Boundary
 
@@ -81,20 +82,5 @@ deployment.
 - Logs contain operational event names only, never request bodies or identifiers.
 
 ## Production Gates
-
-Before public launch:
-
-- Add integration tests against real DynamoDB, Redis, SNS sandbox, and deployed ALB.
-- Run 1,000-connection load and reconnect-burst tests.
-- Conduct external protocol, application, and AWS security review.
-- Complete mobile E2EE library legal/security review.
-- Add key-transparency service before claiming resistance to malicious key-directory behavior.
-
-Load harness expects one short-lived access token per unique test account:
-
-```bash
-WS_URL=wss://api.example.com/v1/ws \
-WS_TOKEN_FILE=./tokens.txt \
-WS_CONNECTIONS=1000 \
-pnpm load:ws
-```
+Aws stack in this repo != prototype, they are diverged.
+Revisit AWS stack to allign it with prototype.
