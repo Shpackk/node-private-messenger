@@ -1,0 +1,16 @@
+packages:
+  - apps/*
+  - packages/*
+
+allowBuilds:
+  '@biomejs/biome': true
+  argon2: true
+  esbuild: true
+
+onlyBuiltDependencies:
+  - '@biomejs/biome'
+  - argon2
+  - esbuild
+
+overrides:
+  esbuild: 0.28.1
