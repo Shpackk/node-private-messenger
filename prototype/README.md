@@ -2,6 +2,10 @@
 
 Local-only prototype for durable store + ephemeral routing + strict contracts + opaque ciphertext.
 
+## Idea
+
+This prototype explores a private messenger where the backend stores as little user data as possible, treats message content as opaque ciphertext, and gives users control over identity, keys, contact state, and delivery lifetime. The reasoning is privacy first: minimize backend knowledge, reduce stored data, keep user protection central, and make server behavior easy to inspect during local development.
+
 ## Stack
 
 - Postgres: durable accounts, keys, tokens, envelopes, counters, push audit rows.
